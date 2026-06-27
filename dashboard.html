@@ -128,7 +128,7 @@
 
   /* ===== Stat cards ===== */
   .stats{
-    display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px;
+    display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:24px;
   }
   .stat-card{
     background:var(--card);color:var(--ink);border-radius:8px;
@@ -357,6 +357,11 @@
       <div class="value" id="statReports">0</div>
       <div class="delta">by customers, all cities</div>
     </div>
+    <div class="stat-card">
+      <div class="tag">Avg AI Match</div>
+      <div class="value" id="statAiConf">—</div>
+      <div class="delta">packaging confidence</div>
+    </div>
   </div>
 
   <div class="grid">
@@ -382,6 +387,8 @@
               <th>Total scans</th>
               <th>Cities</th>
               <th>Status</th>
+              <th>AI Risk Score</th>
+              <th>Print Match</th>
             </tr>
           </thead>
           <tbody id="anomalyBody">
@@ -422,7 +429,7 @@
    GET  /brand_volume  -> [{brand, genuine, flagged}]
    ========================================================= */
 const USE_MOCK = false;
-const API_BASE = "https://shielding-the-self.onrender.com";
+const API_BASE = ""; // Relative path to use the same host
 const BRANDS = ["Sensodyne", "Amul", "Colgate", "Dettol", "Parle-G"];
 const CITIES = ["Delhi", "Mumbai", "Ranchi", "Patna", "Lucknow", "Kolkata", "Bengaluru"];
 const SHOPS = [
@@ -461,7 +468,9 @@ function seedMock(){
       scan_count: scans,
       unique_cities: cities,
       flagged_at: Date.now() - rnd(0, 6*3600*1000),
-      escalated: flagged && Math.random() > 0.5
+      escalated: flagged && Math.random() > 0.5,
+      packaging_confidence: flagged ? (Math.random() * 0.25 + 0.35) : (Math.random() * 0.07 + 0.92),
+      telemetry_risk_score: flagged ? (Math.random() * 0.29 + 0.7) : (Math.random() * 0.11 + 0.01)
     });
   }
   for(let i=0;i<3;i++){
@@ -478,7 +487,8 @@ function seedMock(){
     total_scans: rnd(800,1400),
     flagged_codes: anomalies.filter(a=>a.scan_count>=10||a.unique_cities>=3).length,
     active_hot_zones: hotzones.length,
-    reports_filed: rnd(20,60)
+    reports_filed: rnd(20,60),
+    avg_ai_confidence: 0.94
   };
 }
 seedMock();
@@ -524,6 +534,8 @@ function renderStats(s){
   document.getElementById("statFlagged").textContent = s.flagged_codes;
   document.getElementById("statZones").textContent = s.active_hot_zones;
   document.getElementById("statReports").textContent = s.reports_filed;
+  const aiConfEl = document.getElementById("statAiConf");
+  if(aiConfEl) aiConfEl.textContent = s.avg_ai_confidence ? (s.avg_ai_confidence * 100).toFixed(1) + "%" : "100%";
 }
 
 /* ---------- render: table ---------- */
@@ -552,12 +564,27 @@ function renderTable(rows){
       badge = `<span class="badge fake"><span class="dot"></span>Flagged</span>`;
     }
 
+    const aiRiskScore = r.telemetry_risk_score !== undefined ? (r.telemetry_risk_score * 100).toFixed(1) + "%" : "—";
+    const aiPrintMatch = r.packaging_confidence !== undefined ? (r.packaging_confidence * 100).toFixed(1) + "%" : "—";
+
+    let riskColor = "inherit";
+    if (r.telemetry_risk_score >= 0.75) riskColor = "var(--red)";
+    else if (r.telemetry_risk_score >= 0.3) riskColor = "#C76A2E"; // caution
+    else if (r.telemetry_risk_score > 0) riskColor = "#1F7A5C"; // green
+
+    let printColor = "inherit";
+    if (r.packaging_confidence <= 0.6) printColor = "var(--red)";
+    else if (r.packaging_confidence <= 0.85) printColor = "#C76A2E";
+    else if (r.packaging_confidence > 0) printColor = "#1F7A5C";
+
     return `<tr class="${isNew?'row-new':''}">
       <td>${r.qr_code_id}</td>
       <td>${r.brand}</td>
       <td>${r.scan_count}</td>
       <td>${r.unique_cities}</td>
       <td>${badge}</td>
+      <td style="color:${riskColor}; font-weight:bold;">${aiRiskScore}</td>
+      <td style="color:${printColor}; font-weight:bold;">${aiPrintMatch}</td>
     </tr>`;
   }).join("");
   lastRenderedIds = new Set(rows.map(r=>r.qr_code_id));
@@ -661,7 +688,9 @@ document.getElementById('simulateBtn').addEventListener('click', () => {
   const id = codeId();
   anomalies.unshift({
     qr_code_id: id, brand, scan_count: scans, unique_cities: cities,
-    flagged_at: Date.now(), escalated: false
+    flagged_at: Date.now(), escalated: false,
+    packaging_confidence: (Math.random() * 0.25 + 0.35),
+    telemetry_risk_score: (Math.random() * 0.29 + 0.7)
   });
   stats.flagged_codes += 1;
   stats.total_scans += scans;

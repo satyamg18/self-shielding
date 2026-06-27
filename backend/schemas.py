@@ -20,6 +20,13 @@ class ScanResponse(BaseModel):
     reason: str
     scan_count: int
     unique_cities: int
+    packaging_confidence: Optional[float] = 1.0
+    telemetry_risk_score: Optional[float] = 0.0
+    trust_score: float = 100.0
+    ocr_match: bool = True
+    logo_match: bool = True
+    signature_valid: bool = True
+    qr_valid: bool = True
 
 
 # ---------- /product/{qr_code_id} ----------
@@ -53,6 +60,8 @@ class AnomalyItem(BaseModel):
     flagged_at: datetime
     level: str  # "WARNING" | "CAUTION" | "FAKE"
     escalated: bool
+    packaging_confidence: Optional[float] = 1.0
+    telemetry_risk_score: Optional[float] = 0.0
 
 
 # ---------- /stats ----------
@@ -61,6 +70,7 @@ class StatsResponse(BaseModel):
     flagged_codes: int
     active_hot_zones: int
     reports_filed: int
+    avg_ai_confidence: Optional[float] = 1.0
 
 
 # ---------- /hotzones ----------

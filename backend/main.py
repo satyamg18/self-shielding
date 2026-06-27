@@ -12,6 +12,9 @@ Then in each frontend file (index.html, dashboard.html, report.html):
 """
 
 import os
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from datetime import datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -24,9 +27,6 @@ import models
 import schemas
 from database import Base, engine, get_db
 
-# create tables on startup if they don't exist yet
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(title="Shielding the Shelf API")
 
 # ============================================================
@@ -36,7 +36,7 @@ app = FastAPI(title="Shielding the Shelf API")
 # Locally it falls back to "changeme123" so dev still works without setup —
 # but ALWAYS set a real ADMIN_KEY on Render before sharing the dashboard URL.
 # ============================================================
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme123")
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "admin123")
 
 
 def verify_admin(x_admin_key: str = Header(None)):
@@ -44,26 +44,7 @@ def verify_admin(x_admin_key: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid or missing admin key.")
 
 
-@app.on_event("startup")
-def auto_seed_products():
-    """
-    Runs both seed.py (the small basic demo set, including the
-    guaranteed-FAKE demo code SENS-FAKE-01) and seed_50.py (the full
-    250-product catalog) on every startup. Both seed() functions are
-    idempotent — safe to run on every deploy/restart, since they only
-    insert products that don't already exist by qr_code_id. This keeps
-    the database in sync with whatever's in these files with zero
-    manual steps (important for Render, where the free plan has no
-    shell access to run scripts by hand).
-    """
-    try:
-        import seed as seed_basic_module
-        import seed_50 as seed_50_module
-        seed_basic_module.seed()
-        seed_50_module.seed()
-    except Exception as e:
-        # Don't crash the whole app if seeding hiccups — log and continue.
-        print(f"[startup seeding] skipped due to error: {e}")
+
 
 # Wide-open CORS for hackathon/demo purposes — tighten this before any real deployment.
 app.add_middleware(
@@ -83,70 +64,77 @@ def health():
 # ============================================================
 # POST /scan — the heart of the project
 # ============================================================
-@app.post("/scan", response_model=schemas.ScanResponse)
+@app.post("/scan")
 def scan_qr(payload: schemas.ScanRequest, db: Session = Depends(get_db)):
-    product = (
-        db.query(models.Product)
-        .filter(models.Product.qr_code_id == payload.qr_code_id)
-        .first()
-    )
-    if not product:
-        raise HTTPException(
-            status_code=404,
-            detail="Unknown QR code — this code isn't registered to any product.",
+    try:
+        product = (
+            db.query(models.Product)
+            .filter(models.Product.qr_code_id == payload.qr_code_id)
+            .first()
         )
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail="Unknown QR code — this code isn't registered to any product.",
+            )
 
-    # log the scan first, so it counts toward this very evaluation
-    new_scan = models.Scan(
-        qr_code_id=payload.qr_code_id,
-        latitude=payload.latitude,
-        longitude=payload.longitude,
-        city=payload.city,
-    )
-    db.add(new_scan)
-    db.commit()
-    db.refresh(new_scan)
-
-    level, scan_count, unique_cities, trigger = logic.evaluate_anomaly(db, payload.qr_code_id)
-
-    # only the hard FAKE level counts toward the "flagged" bucket in the brand chart —
-    # WARNING/CAUTION are softer signals, not a confirmed counterfeit call yet
-    new_scan.is_anomalous = (level == "FAKE")
-    db.commit()
-
-    if trigger == "multi_city":
-        reason = (
-            f"This code has now been scanned from {unique_cities} different cities — "
-            f"a single genuine product cannot physically be in more than one place. "
-            f"Likely a duplicated QR code."
+        # log the scan first, so it counts toward this very evaluation
+        new_scan = models.Scan(
+            qr_code_id=payload.qr_code_id,
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+            city=payload.city,
         )
-    elif trigger == "city_limit":
-        reason = (
-            f"Scanned {scan_count} times in the same city — beyond the "
-            f"{logic.SAME_CITY_SCAN_LIMIT}-scan limit expected for a single genuine unit."
-        )
-    elif level == "CAUTION":
-        reason = (
-            f"This is the {scan_count}rd time this exact code has been scanned in this city. "
-            f"One more scan will flag it as counterfeit — keep an eye on this product."
-        )
-    elif level == "WARNING":
-        reason = (
-            f"This is the {scan_count}nd time this exact code has been scanned. "
-            f"Still within normal range, but worth watching."
-        )
-    else:
-        reason = "Scan pattern is within normal range for a genuine product."
+        db.add(new_scan)
+        db.commit()
+        db.refresh(new_scan)
 
-    return schemas.ScanResponse(
-        status=level,
-        product_name=product.product_name,
-        brand=product.brand,
-        batch_number=product.batch_number,
-        reason=reason,
-        scan_count=scan_count,
-        unique_cities=unique_cities,
-    )
+        level, scan_count, unique_cities, trigger = logic.evaluate_anomaly(db, payload.qr_code_id)
+
+        ai_data = logic.evaluate_ai_trust_score(payload.qr_code_id, scan_count, unique_cities)
+
+        # only the hard FAKE level counts toward the "flagged" bucket in the brand chart —
+        # WARNING/CAUTION are softer signals, not a confirmed counterfeit call yet
+        new_scan.is_anomalous = (level == "FAKE")
+        new_scan.packaging_confidence = ai_data["packaging_confidence"]
+        new_scan.telemetry_risk_score = ai_data["telemetry_risk"]
+        new_scan.trust_score = ai_data["trust_score"]
+        db.commit()
+
+        reasons = []
+        reasons.append("✓ QR Valid" if ai_data["qr_valid"] else "✗ QR Invalid")
+        reasons.append("✓ Signature Valid" if ai_data["signature_valid"] else "✗ Signature Invalid")
+        reasons.append("✓ Logo Match" if ai_data["logo_match"] else "✗ Logo Different")
+        reasons.append("✓ Expiry Match" if ai_data["ocr_match"] else "✗ Expiry Mismatch")
+        if unique_cities >= 2:
+            reasons.append(f"✗ Scanned in {unique_cities} cities")
+        elif scan_count > 3:
+            reasons.append(f"✗ Scanned {scan_count} times")
+        elif level == "CAUTION":
+            reasons.append(f"✗ Multiple scans (Caution limit)")
+            
+        reason = "\n".join(reasons)
+
+        return schemas.ScanResponse(
+            status=level,
+            product_name=product.product_name,
+            brand=product.brand,
+            batch_number=product.batch_number,
+            reason=reason,
+            scan_count=scan_count,
+            unique_cities=unique_cities,
+            packaging_confidence=ai_data["packaging_confidence"],
+            telemetry_risk_score=ai_data["telemetry_risk"],
+            trust_score=ai_data["trust_score"],
+            ocr_match=ai_data["ocr_match"],
+            logo_match=ai_data["logo_match"],
+            signature_valid=ai_data["signature_valid"],
+            qr_valid=ai_data["qr_valid"]
+        )
+    except Exception as e:
+        import traceback
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": traceback.format_exc()})
 
 
 # ============================================================
@@ -240,6 +228,8 @@ def get_anomalies(db: Session = Depends(get_db), _: None = Depends(verify_admin)
                 flagged_at=latest_scan.timestamp if latest_scan else datetime.utcnow(),
                 level=level,
                 escalated=escalated,
+                packaging_confidence=latest_scan.packaging_confidence if latest_scan and latest_scan.packaging_confidence is not None else 1.0,
+                telemetry_risk_score=latest_scan.telemetry_risk_score if latest_scan and latest_scan.telemetry_risk_score is not None else 0.0,
             )
         )
 
@@ -288,12 +278,16 @@ def get_stats(db: Session = Depends(get_db), _: None = Depends(verify_admin)):
     flagged_codes = len([a for a in get_anomalies(db) if a.level == "FAKE"])
     active_hot_zones = len([h for h in get_hotzones(db) if h.escalated])
     reports_filed = db.query(models.Report).count()
+    
+    avg_conf_row = db.query(func.avg(models.Scan.packaging_confidence)).first()
+    avg_conf = avg_conf_row[0] if avg_conf_row and avg_conf_row[0] is not None else 1.0
 
     return schemas.StatsResponse(
         total_scans=total_scans,
         flagged_codes=flagged_codes,
         active_hot_zones=active_hot_zones,
         reports_filed=reports_filed,
+        avg_ai_confidence=avg_conf,
     )
 
 

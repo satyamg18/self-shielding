@@ -173,6 +173,36 @@
     text-align: center;
   }
 
+  /* ---------- AI Overlay ---------- */
+  .ai-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(11,18,16,0.85);
+    z-index: 100;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--paper);
+  }
+  .ai-overlay.show {
+    display: flex;
+  }
+  .ai-spinner {
+    width: 40px; height: 40px;
+    border: 3px solid rgba(255,255,255,0.2);
+    border-top-color: var(--verified);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 16px;
+  }
+  @keyframes spin { 100% { transform: rotate(360deg); } }
+  .ai-text {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.05em;
+  }
+
   /* ---------- Manual entry ---------- */
   .manual-row {
     display: flex;
@@ -452,6 +482,10 @@
       <div class="bracket br"></div>
       <div class="scanline" id="scanline"></div>
       <div class="reticle-label">align code within frame</div>
+      <div class="ai-overlay" id="aiOverlay">
+        <div class="ai-spinner"></div>
+        <div class="ai-text">AI Verification...</div>
+      </div>
     </div>
     <div class="scan-hint">Hold steady — detection is automatic</div>
 
@@ -482,6 +516,8 @@
         <tr><td>Batch number</td><td id="dBatch">—</td></tr>
         <tr><td>Scan location</td><td id="dCity">—</td></tr>
         <tr><td>Total scans</td><td id="dScans">—</td></tr>
+        <tr><td>AI Print Match</td><td id="dAiPrint">—</td></tr>
+        <tr><td>ML Telemetry Risk</td><td id="dAiRisk">—</td></tr>
       </table>
 
       <div class="reason-box" id="reasonBox" style="display:none;"></div>
@@ -508,7 +544,7 @@
   // Everything else stays exactly the same.
   // ---------------------------------------------------------------
   const USE_MOCK = false;
-  const API_BASE = "https://shielding-the-self.onrender.com";
+  const API_BASE = ""; // Relative path to use the same host
   const el = (id) => document.getElementById(id);
   const resultCard = el('resultCard');
   const toast = el('toast');
@@ -585,9 +621,12 @@
       batch_number: qrCode.toUpperCase(),
       scan_count: scanCount,
       unique_cities: uniqueCities,
+      packaging_confidence: isFake ? (Math.random() * 0.25 + 0.35) : (Math.random() * 0.07 + 0.92),
+      telemetry_risk_score: isFake ? (Math.random() * 0.29 + 0.7) : (Math.random() * 0.11 + 0.01),
+      trust_score: isFake ? Math.floor(Math.random() * 30 + 20) : Math.floor(Math.random() * 10 + 90),
       reason: isFake
-        ? `This code has been scanned ${scanCount} times across ${uniqueCities} different cities in the last 2 hours. A genuine unit cannot move that fast.`
-        : null
+        ? `✓ Signature Valid\n✓ QR Valid\n✗ Logo Different\n✗ Expiry mismatch\n✗ Scanned ${scanCount} times`
+        : `✓ Signature Valid\n✓ QR Valid\n✓ Logo Match\n✓ Expiry Match`
     };
   }
 
@@ -618,32 +657,28 @@
       cardClass: "verified",
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>',
       title: "Genuine product",
-      sub: "No anomalies detected in scan history",
-      showReason: false,
+      sub: "AI workflow analysis",
       showReport: false,
     },
     WARNING: {
       cardClass: "warning",
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 2.7 17a1.9 1.9 0 0 0 1.6 2.9h15.4a1.9 1.9 0 0 0 1.6-2.9L13.7 3.9a1.9 1.9 0 0 0-3.4 0Z"/></svg>',
       title: "Worth watching",
-      sub: "Scanned more than once — likely still fine",
-      showReason: true,
+      sub: "AI workflow analysis",
       showReport: false,
     },
     CAUTION: {
       cardClass: "caution",
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 2.7 17a1.9 1.9 0 0 0 1.6 2.9h15.4a1.9 1.9 0 0 0 1.6-2.9L13.7 3.9a1.9 1.9 0 0 0-3.4 0Z"/></svg>',
       title: "Approaching the limit",
-      sub: "One more scan will flag this as counterfeit",
-      showReason: true,
+      sub: "AI workflow analysis",
       showReport: false,
     },
     FAKE: {
       cardClass: "flagged",
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 2.7 17a1.9 1.9 0 0 0 1.6 2.9h15.4a1.9 1.9 0 0 0 1.6-2.9L13.7 3.9a1.9 1.9 0 0 0-3.4 0Z"/></svg>',
       title: "Likely counterfeit",
-      sub: "Scan pattern is inconsistent with a single unit",
-      showReason: true,
+      sub: "AI workflow analysis",
       showReport: true,
     },
   };
@@ -654,19 +689,27 @@
     resultCard.className = "result-card show " + config.cardClass;
     el('resultSeal').innerHTML = config.icon;
     el('resultTitle').textContent = config.title;
-    el('resultSub').textContent = config.sub;
+    el('resultSub').textContent = `Trust Score: ${data.trust_score}% | ${config.sub}`;
 
     el('dBrand').textContent = data.brand;
     el('dBatch').textContent = data.batch_number || scannedCode;
     el('dCity').textContent = data._city;
     el('dScans').textContent = `${data.scan_count} scans · ${data.unique_cities} cities`;
+    el('dAiPrint').textContent = typeof data.packaging_confidence === 'number' ? `${(data.packaging_confidence * 100).toFixed(1)}%` : '—';
+    el('dAiRisk').textContent = typeof data.telemetry_risk_score === 'number' ? `${(data.telemetry_risk_score * 100).toFixed(1)}%` : '—';
 
     const reasonBox = el('reasonBox');
-    if (config.showReason) {
-      reasonBox.style.display = 'block';
-      reasonBox.textContent = data.reason;
+    reasonBox.style.display = 'block';
+    reasonBox.innerHTML = data.reason ? data.reason.replace(/\n/g, '<br>') : '';
+    
+    if (data.status === 'SAFE') {
+        reasonBox.style.background = 'rgba(31,122,92,0.08)';
+        reasonBox.style.borderColor = 'rgba(31,122,92,0.25)';
+        reasonBox.style.color = 'var(--verified-dark)';
     } else {
-      reasonBox.style.display = 'none';
+        reasonBox.style.background = 'rgba(178,58,46,0.08)';
+        reasonBox.style.borderColor = 'rgba(178,58,46,0.25)';
+        reasonBox.style.color = 'var(--alert-dark)';
     }
 
     el('btnReport').className = 'btn-report' + (config.showReport ? ' show' : '');
@@ -684,11 +727,15 @@
     }
     const trimmed = qrCode.trim();
     scanningActive = false; // pause camera detection until result is dismissed
-    showToast("Checking scan pattern…");
+    
+    el('aiOverlay').classList.add('show');
+    
     try {
       const data = await callScanEndpoint(trimmed);
+      el('aiOverlay').classList.remove('show');
       renderResult(data, trimmed);
     } catch (err) {
+      el('aiOverlay').classList.remove('show');
       showToast("Could not reach the server. Try again.");
       scanningActive = true; // resume on failure so the user isn't stuck
     }
