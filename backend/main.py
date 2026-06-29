@@ -1,5 +1,5 @@
 """
-Shielding the Shelf — backend API.
+Self-Shielding — backend API.
 
 Run locally:
     pip install -r requirements.txt
@@ -27,7 +27,7 @@ import models
 import schemas
 from database import Base, engine, get_db
 
-app = FastAPI(title="Shielding the Shelf API")
+app = FastAPI(title="Self-Shielding API")
 
 # ============================================================
 # Admin auth — protects the dashboard's data endpoints.
