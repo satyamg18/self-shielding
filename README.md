@@ -188,3 +188,8 @@ The project is deployed on **Vercel** as a serverless Python function.
 ## Team
 
 Developed as a hackathon project to demonstrate how AI-powered behavioural analytics can strengthen counterfeit product detection and improve consumer trust.
+
+- Satyam Gupta
+- Anshuman Tiwari
+- Anmol Dubey
+- Shlok Yadav
